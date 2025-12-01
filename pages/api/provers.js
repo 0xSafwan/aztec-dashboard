@@ -1,205 +1,254 @@
 // API Route: /api/provers
-// This runs on Vercel's servers, so no CORS issues!
-
-const AZTEC_CONFIG = {
-  ROLLUP_CONTRACT: '0x603bb2c05D474794ea97805e8De69bCcFb3bCA12',
-  GENESIS_BLOCK: 21218000,
-  BLOCKS_PER_EPOCH: 32
-};
+// Aztec Ignition Prover Dashboard - v4 with full debugging
 
 export default async function handler(req, res) {
-  // Enable CORS
+  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
   
+  // Contract address - Aztec Ignition Chain L2 Rollup
+  const ROLLUP_CONTRACT = '0x603bb2c05d474794ea97805e8de69bccfb3bca12';
+  const BLOCKS_PER_EPOCH = 32;
+  
+  // Debug object to track what's happening
+  const debug = {
+    step: 'starting',
+    apiKeyExists: false,
+    apiKeyLength: 0,
+    etherscanUrl: '',
+    fetchStatus: '',
+    etherscanResponse: null,
+    error: null
+  };
+  
   try {
-    // Get API key from environment variable (set in Vercel dashboard)
-    const apiKey = process.env.ETHERSCAN_API_KEY || 'YourApiKeyToken';
+    // Step 1: Check API key
+    debug.step = 'checking_api_key';
+    const apiKey = process.env.ETHERSCAN_API_KEY;
+    debug.apiKeyExists = !!apiKey;
+    debug.apiKeyLength = apiKey ? apiKey.length : 0;
+    debug.apiKeyPreview = apiKey ? apiKey.substring(0, 8) + '...' : 'NOT SET';
     
-    // Fetch transactions to the rollup contract
-    const txUrl = `https://api.etherscan.io/api?module=account&action=txlist&address=${AZTEC_CONFIG.ROLLUP_CONTRACT}&startblock=${AZTEC_CONFIG.GENESIS_BLOCK}&endblock=latest&sort=desc&apikey=${apiKey}`;
-    
-    const txResponse = await fetch(txUrl);
-    const txData = await txResponse.json();
-    
-    if (txData.status !== '1') {
-      // Return empty data if no transactions or error
+    if (!apiKey) {
       return res.status(200).json({
-        success: true,
-        data: {
-          epochs: [],
-          provers: [],
-          submissions: [],
-          stats: {
-            totalRewards: 0,
-            totalProofs: 0,
-            totalEpochs: 0,
-            activeProvers: 0
-          }
-        },
-        message: txData.message || 'No data found'
+        success: false,
+        error: 'ETHERSCAN_API_KEY environment variable is not set in Vercel',
+        debug,
+        data: emptyData()
       });
     }
     
-    const transactions = txData.result;
+    // Step 2: Build Etherscan URL
+    debug.step = 'building_url';
+    const etherscanUrl = `https://api.etherscan.io/api?module=account&action=txlist&address=${ROLLUP_CONTRACT}&startblock=0&endblock=latest&sort=desc&apikey=${apiKey}`;
+    debug.etherscanUrl = etherscanUrl.replace(apiKey, 'HIDDEN');
     
-    // Process transactions into epochs and provers
-    const processed = processTransactions(transactions);
+    // Step 3: Fetch from Etherscan
+    debug.step = 'fetching';
+    const response = await fetch(etherscanUrl);
+    debug.fetchStatus = response.status;
+    debug.fetchOk = response.ok;
     
-    res.status(200).json({
+    // Step 4: Parse response
+    debug.step = 'parsing';
+    const data = await response.json();
+    debug.etherscanStatus = data.status;
+    debug.etherscanMessage = data.message;
+    debug.resultType = typeof data.result;
+    debug.resultLength = Array.isArray(data.result) ? data.result.length : 'not array';
+    
+    // Step 5: Check for errors
+    if (data.status !== '1') {
+      debug.step = 'etherscan_error';
+      return res.status(200).json({
+        success: false,
+        error: `Etherscan returned: ${data.message}`,
+        debug,
+        data: emptyData()
+      });
+    }
+    
+    if (!Array.isArray(data.result) || data.result.length === 0) {
+      debug.step = 'no_transactions';
+      return res.status(200).json({
+        success: false,
+        error: 'No transactions found for this contract',
+        debug,
+        data: emptyData()
+      });
+    }
+    
+    // Step 6: Process transactions
+    debug.step = 'processing';
+    const transactions = data.result;
+    
+    // Find first block to use as genesis
+    const allBlocks = transactions.map(tx => parseInt(tx.blockNumber));
+    const genesisBlock = Math.min(...allBlocks);
+    debug.genesisBlock = genesisBlock;
+    debug.latestBlock = Math.max(...allBlocks);
+    
+    // Filter incoming transactions (TO the contract)
+    const incomingTxs = transactions.filter(tx => 
+      tx.isError === '0' && 
+      tx.to && 
+      tx.to.toLowerCase() === ROLLUP_CONTRACT.toLowerCase()
+    );
+    debug.incomingTxCount = incomingTxs.length;
+    
+    // Process into epochs and provers
+    const epochMap = new Map();
+    const proverMap = new Map();
+    const submissions = [];
+    
+    incomingTxs.forEach(tx => {
+      const blockNum = parseInt(tx.blockNumber);
+      const epochNum = Math.floor((blockNum - genesisBlock) / BLOCKS_PER_EPOCH);
+      const prover = tx.from.toLowerCase();
+      const timestamp = parseInt(tx.timeStamp) * 1000;
+      const gasUsed = parseInt(tx.gasUsed);
+      const reward = parseFloat((gasUsed / 10000).toFixed(4));
+      
+      // Submissions
+      submissions.push({
+        id: tx.hash,
+        epochNumber: epochNum,
+        prover: tx.from,
+        gasUsed,
+        reward,
+        timestamp,
+        txHash: tx.hash,
+        blockNumber: blockNum,
+        status: 'confirmed'
+      });
+      
+      // Epochs
+      if (!epochMap.has(epochNum)) {
+        epochMap.set(epochNum, {
+          epochNumber: epochNum,
+          blockStart: genesisBlock + (epochNum * BLOCKS_PER_EPOCH),
+          blockEnd: genesisBlock + ((epochNum + 1) * BLOCKS_PER_EPOCH) - 1,
+          provers: new Map(),
+          totalReward: 0,
+          totalGas: 0,
+          timestamp: timestamp,
+          status: 'proven'
+        });
+      }
+      
+      const epoch = epochMap.get(epochNum);
+      if (!epoch.provers.has(prover)) {
+        epoch.provers.set(prover, {
+          address: tx.from,
+          gasUsed: 0,
+          reward: 0,
+          proofCount: 0,
+          timestamp
+        });
+      }
+      const epochProver = epoch.provers.get(prover);
+      epochProver.gasUsed += gasUsed;
+      epochProver.reward += reward;
+      epochProver.proofCount += 1;
+      epoch.totalReward += reward;
+      epoch.totalGas += gasUsed;
+      epoch.timestamp = Math.max(epoch.timestamp, timestamp);
+      
+      // Provers
+      if (!proverMap.has(prover)) {
+        proverMap.set(prover, {
+          address: tx.from,
+          totalRewards: 0,
+          totalProofs: 0,
+          totalGasUsed: 0,
+          epochs: new Set(),
+          firstSeen: timestamp,
+          lastSeen: timestamp
+        });
+      }
+      const proverStats = proverMap.get(prover);
+      proverStats.totalRewards += reward;
+      proverStats.totalProofs += 1;
+      proverStats.totalGasUsed += gasUsed;
+      proverStats.epochs.add(epochNum);
+      proverStats.lastSeen = Math.max(proverStats.lastSeen, timestamp);
+    });
+    
+    // Convert to arrays
+    const epochs = Array.from(epochMap.values())
+      .map(e => ({
+        epochNumber: e.epochNumber,
+        blockStart: e.blockStart,
+        blockEnd: e.blockEnd,
+        proverCount: e.provers.size,
+        provers: Array.from(e.provers.values()),
+        totalReward: parseFloat(e.totalReward.toFixed(4)),
+        totalGas: e.totalGas,
+        timestamp: e.timestamp,
+        status: e.status
+      }))
+      .sort((a, b) => b.epochNumber - a.epochNumber);
+    
+    const provers = Array.from(proverMap.values())
+      .map(p => ({
+        address: p.address,
+        totalRewards: parseFloat(p.totalRewards.toFixed(4)),
+        totalProofs: p.totalProofs,
+        totalGasUsed: p.totalGasUsed,
+        epochCount: p.epochs.size,
+        avgRewardPerEpoch: parseFloat((p.totalRewards / p.epochs.size).toFixed(4)),
+        firstSeen: p.firstSeen,
+        lastSeen: p.lastSeen
+      }))
+      .sort((a, b) => b.totalRewards - a.totalRewards);
+    
+    const stats = {
+      totalRewards: parseFloat(provers.reduce((sum, p) => sum + p.totalRewards, 0).toFixed(4)),
+      totalProofs: provers.reduce((sum, p) => sum + p.totalProofs, 0),
+      totalEpochs: epochs.length,
+      activeProvers: provers.length
+    };
+    
+    debug.step = 'complete';
+    debug.processedEpochs = epochs.length;
+    debug.processedProvers = provers.length;
+    
+    return res.status(200).json({
       success: true,
-      data: processed,
+      data: {
+        epochs: epochs.slice(0, 100),
+        provers,
+        submissions: submissions.slice(0, 200),
+        stats
+      },
+      debug,
       lastUpdated: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('API Error:', error);
-    res.status(500).json({
+    debug.step = 'error';
+    debug.error = error.message;
+    debug.stack = error.stack;
+    
+    return res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      debug,
+      data: emptyData()
     });
   }
 }
 
-function getEpochFromBlock(blockNumber) {
-  return Math.floor((blockNumber - AZTEC_CONFIG.GENESIS_BLOCK) / AZTEC_CONFIG.BLOCKS_PER_EPOCH);
-}
-
-function processTransactions(transactions) {
-  const epochMap = new Map();
-  const proverMap = new Map();
-  const submissions = [];
-  
-  // Filter successful transactions
-  const validTxs = transactions.filter(tx => 
-    tx.isError === '0' && 
-    tx.to?.toLowerCase() === AZTEC_CONFIG.ROLLUP_CONTRACT.toLowerCase()
-  );
-  
-  validTxs.forEach((tx, index) => {
-    const blockNum = parseInt(tx.blockNumber);
-    const epochNum = getEpochFromBlock(blockNum);
-    const prover = tx.from.toLowerCase();
-    const timestamp = parseInt(tx.timeStamp) * 1000;
-    const gasUsed = parseInt(tx.gasUsed);
-    
-    // Simulated reward (in real implementation, this would come from event logs)
-    // Reward calculation would need to parse the actual contract events
-    const estimatedReward = parseFloat((gasUsed / 10000).toFixed(4));
-    
-    // Track submissions
-    submissions.push({
-      id: tx.hash,
-      epochNumber: epochNum,
-      prover: tx.from,
-      gasUsed,
-      reward: estimatedReward,
-      proofCount: 1,
-      timestamp,
-      txHash: tx.hash,
-      blockNumber: blockNum,
-      status: 'confirmed'
-    });
-    
-    // Epoch tracking
-    if (!epochMap.has(epochNum)) {
-      epochMap.set(epochNum, {
-        epochNumber: epochNum,
-        blockStart: AZTEC_CONFIG.GENESIS_BLOCK + (epochNum * AZTEC_CONFIG.BLOCKS_PER_EPOCH),
-        blockEnd: AZTEC_CONFIG.GENESIS_BLOCK + ((epochNum + 1) * AZTEC_CONFIG.BLOCKS_PER_EPOCH) - 1,
-        provers: [],
-        proverAddresses: new Set(),
-        totalReward: 0,
-        totalGas: 0,
-        timestamp: timestamp,
-        status: 'proven'
-      });
-    }
-    
-    const epoch = epochMap.get(epochNum);
-    if (!epoch.proverAddresses.has(prover)) {
-      epoch.proverAddresses.add(prover);
-      epoch.provers.push({
-        address: tx.from,
-        gasUsed,
-        reward: estimatedReward,
-        proofCount: 1,
-        timestamp
-      });
-    } else {
-      const existingProver = epoch.provers.find(p => p.address.toLowerCase() === prover);
-      if (existingProver) {
-        existingProver.gasUsed += gasUsed;
-        existingProver.reward += estimatedReward;
-        existingProver.proofCount += 1;
-      }
-    }
-    epoch.totalReward += estimatedReward;
-    epoch.totalGas += gasUsed;
-    epoch.timestamp = Math.max(epoch.timestamp, timestamp);
-    
-    // Prover tracking
-    if (!proverMap.has(prover)) {
-      proverMap.set(prover, {
-        address: tx.from,
-        totalRewards: 0,
-        totalProofs: 0,
-        totalGasUsed: 0,
-        epochsParticipated: new Set(),
-        submissions: [],
-        firstSeen: timestamp,
-        lastSeen: timestamp
-      });
-    }
-    
-    const proverStats = proverMap.get(prover);
-    proverStats.totalRewards += estimatedReward;
-    proverStats.totalProofs += 1;
-    proverStats.totalGasUsed += gasUsed;
-    proverStats.epochsParticipated.add(epochNum);
-    proverStats.submissions.push({
-      epochNumber: epochNum,
-      reward: estimatedReward,
-      proofCount: 1,
-      timestamp,
-      txHash: tx.hash
-    });
-    proverStats.firstSeen = Math.min(proverStats.firstSeen, timestamp);
-    proverStats.lastSeen = Math.max(proverStats.lastSeen, timestamp);
-  });
-  
-  // Convert maps to arrays
-  const epochs = Array.from(epochMap.values())
-    .map(e => ({
-      ...e,
-      proverCount: e.provers.length,
-      totalReward: parseFloat(e.totalReward.toFixed(4)),
-      proverAddresses: undefined // Remove Set from response
-    }))
-    .sort((a, b) => b.epochNumber - a.epochNumber);
-  
-  const provers = Array.from(proverMap.values())
-    .map(p => ({
-      ...p,
-      totalRewards: parseFloat(p.totalRewards.toFixed(4)),
-      epochCount: p.epochsParticipated.size,
-      avgRewardPerEpoch: parseFloat((p.totalRewards / p.epochsParticipated.size).toFixed(4)),
-      epochsParticipated: undefined // Remove Set from response
-    }))
-    .sort((a, b) => b.totalRewards - a.totalRewards);
-  
-  // Calculate stats
-  const stats = {
-    totalRewards: parseFloat(provers.reduce((sum, p) => sum + p.totalRewards, 0).toFixed(4)),
-    totalProofs: provers.reduce((sum, p) => sum + p.totalProofs, 0),
-    totalEpochs: epochs.length,
-    activeProvers: provers.length
-  };
-  
+function emptyData() {
   return {
-    epochs: epochs.slice(0, 100), // Limit to 100 epochs
-    provers,
-    submissions: submissions.slice(0, 200), // Limit to 200 submissions
-    stats
+    epochs: [],
+    provers: [],
+    submissions: [],
+    stats: {
+      totalRewards: 0,
+      totalProofs: 0,
+      totalEpochs: 0,
+      activeProvers: 0
+    }
   };
 }
