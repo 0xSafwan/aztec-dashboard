@@ -1,28 +1,20 @@
 // API Route: /api/provers
-// Aztec Ignition Prover Dashboard - v4 with full debugging
+// Aztec Ignition Prover Dashboard - Using Etherscan API V2
 
 export default async function handler(req, res) {
-  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
   
-  // Contract address - Aztec Ignition Chain L2 Rollup
   const ROLLUP_CONTRACT = '0x603bb2c05d474794ea97805e8de69bccfb3bca12';
   const BLOCKS_PER_EPOCH = 32;
   
-  // Debug object to track what's happening
   const debug = {
     step: 'starting',
     apiKeyExists: false,
-    apiKeyLength: 0,
-    etherscanUrl: '',
-    fetchStatus: '',
-    etherscanResponse: null,
-    error: null
+    apiKeyLength: 0
   };
   
   try {
-    // Step 1: Check API key
     debug.step = 'checking_api_key';
     const apiKey = process.env.ETHERSCAN_API_KEY;
     debug.apiKeyExists = !!apiKey;
@@ -32,24 +24,22 @@ export default async function handler(req, res) {
     if (!apiKey) {
       return res.status(200).json({
         success: false,
-        error: 'ETHERSCAN_API_KEY environment variable is not set in Vercel',
+        error: 'ETHERSCAN_API_KEY environment variable is not set',
         debug,
         data: emptyData()
       });
     }
     
-    // Step 2: Build Etherscan URL
+    // UPDATED: Using Etherscan API V2 with chainid=1 for Ethereum mainnet
     debug.step = 'building_url';
-    const etherscanUrl = `https://api.etherscan.io/api?module=account&action=txlist&address=${ROLLUP_CONTRACT}&startblock=0&endblock=latest&sort=desc&apikey=${apiKey}`;
+    const etherscanUrl = `https://api.etherscan.io/v2/api?chainid=1&module=account&action=txlist&address=${ROLLUP_CONTRACT}&startblock=0&endblock=99999999&sort=desc&apikey=${apiKey}`;
     debug.etherscanUrl = etherscanUrl.replace(apiKey, 'HIDDEN');
     
-    // Step 3: Fetch from Etherscan
     debug.step = 'fetching';
     const response = await fetch(etherscanUrl);
     debug.fetchStatus = response.status;
     debug.fetchOk = response.ok;
     
-    // Step 4: Parse response
     debug.step = 'parsing';
     const data = await response.json();
     debug.etherscanStatus = data.status;
@@ -57,12 +47,11 @@ export default async function handler(req, res) {
     debug.resultType = typeof data.result;
     debug.resultLength = Array.isArray(data.result) ? data.result.length : 'not array';
     
-    // Step 5: Check for errors
     if (data.status !== '1') {
       debug.step = 'etherscan_error';
       return res.status(200).json({
         success: false,
-        error: `Etherscan returned: ${data.message}`,
+        error: `Etherscan returned: ${data.message || data.result}`,
         debug,
         data: emptyData()
       });
@@ -72,23 +61,20 @@ export default async function handler(req, res) {
       debug.step = 'no_transactions';
       return res.status(200).json({
         success: false,
-        error: 'No transactions found for this contract',
+        error: 'No transactions found',
         debug,
         data: emptyData()
       });
     }
     
-    // Step 6: Process transactions
     debug.step = 'processing';
     const transactions = data.result;
     
-    // Find first block to use as genesis
     const allBlocks = transactions.map(tx => parseInt(tx.blockNumber));
     const genesisBlock = Math.min(...allBlocks);
     debug.genesisBlock = genesisBlock;
     debug.latestBlock = Math.max(...allBlocks);
     
-    // Filter incoming transactions (TO the contract)
     const incomingTxs = transactions.filter(tx => 
       tx.isError === '0' && 
       tx.to && 
@@ -96,7 +82,6 @@ export default async function handler(req, res) {
     );
     debug.incomingTxCount = incomingTxs.length;
     
-    // Process into epochs and provers
     const epochMap = new Map();
     const proverMap = new Map();
     const submissions = [];
@@ -109,7 +94,6 @@ export default async function handler(req, res) {
       const gasUsed = parseInt(tx.gasUsed);
       const reward = parseFloat((gasUsed / 10000).toFixed(4));
       
-      // Submissions
       submissions.push({
         id: tx.hash,
         epochNumber: epochNum,
@@ -122,7 +106,6 @@ export default async function handler(req, res) {
         status: 'confirmed'
       });
       
-      // Epochs
       if (!epochMap.has(epochNum)) {
         epochMap.set(epochNum, {
           epochNumber: epochNum,
@@ -154,7 +137,6 @@ export default async function handler(req, res) {
       epoch.totalGas += gasUsed;
       epoch.timestamp = Math.max(epoch.timestamp, timestamp);
       
-      // Provers
       if (!proverMap.has(prover)) {
         proverMap.set(prover, {
           address: tx.from,
@@ -174,7 +156,6 @@ export default async function handler(req, res) {
       proverStats.lastSeen = Math.max(proverStats.lastSeen, timestamp);
     });
     
-    // Convert to arrays
     const epochs = Array.from(epochMap.values())
       .map(e => ({
         epochNumber: e.epochNumber,
@@ -228,7 +209,6 @@ export default async function handler(req, res) {
   } catch (error) {
     debug.step = 'error';
     debug.error = error.message;
-    debug.stack = error.stack;
     
     return res.status(500).json({
       success: false,
