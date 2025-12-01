@@ -2,64 +2,40 @@ import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 
 export default function Home() {
-  const [proverAddress, setProverAddress] = useState('');
-  const [searchedProver, setSearchedProver] = useState(null);
+  const [address, setAddress] = useState('');
+  const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState('');
   const [stats, setStats] = useState(null);
 
-  // Load initial stats
   useEffect(() => {
-    fetchStats();
+    fetch('/api/provers')
+      .then(r => r.json())
+      .then(d => d.success && setStats(d))
+      .catch(() => {});
   }, []);
 
-  const fetchStats = async () => {
-    try {
-      const res = await fetch('/api/provers');
-      const data = await res.json();
-      if (data.success) {
-        setStats(data);
-      }
-    } catch (e) {
-      console.error('Failed to load stats:', e);
-    }
-  };
-
-  const searchProver = async () => {
-    if (!proverAddress || proverAddress.length < 42) {
-      setError('Please enter a valid Ethereum address');
+  const search = async () => {
+    if (!address || address.length < 42) {
+      setError('Enter a valid address');
       return;
     }
-    
     setLoading(true);
-    setError(null);
-    setSearchedProver(null);
+    setError('');
+    setResult(null);
     
     try {
-      const res = await fetch(`/api/provers?prover=${proverAddress}`);
-      const data = await res.json();
-      
-      if (data.success) {
-        setSearchedProver(data);
-      } else {
-        setError(data.error || 'Failed to fetch prover data');
-      }
+      const r = await fetch(`/api/provers?prover=${address}`);
+      const d = await r.json();
+      if (d.success) setResult(d);
+      else setError(d.error || 'Not found');
     } catch (e) {
-      setError('Failed to fetch prover data');
+      setError('Failed to fetch');
     }
-    
     setLoading(false);
   };
 
-  const formatAddress = (addr) => {
-    if (!addr) return '';
-    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-  };
-
-  const formatTime = (ts) => {
-    const date = new Date(ts);
-    return date.toLocaleString();
-  };
+  const fmt = (addr) => addr ? `${addr.slice(0,6)}...${addr.slice(-4)}` : '';
 
   return (
     <>
@@ -68,355 +44,125 @@ export default function Home() {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
       
-      <div style={styles.container}>
-        <header style={styles.header}>
-          <h1 style={styles.title}>🔮 Aztec Prover Rewards</h1>
-          <p style={styles.subtitle}>Check your epoch rewards on Ignition Mainnet</p>
-          {stats && (
-            <div style={styles.currentEpoch}>
-              Current Epoch: <span style={styles.epochHighlight}>#{stats.currentEpoch}</span>
-            </div>
-          )}
-        </header>
-
-        {/* Search Box */}
-        <div style={styles.searchContainer}>
+      <div style={s.page}>
+        <h1 style={s.title}>🔮 Aztec Prover Rewards</h1>
+        <p style={s.sub}>Track your AZTEC rewards per epoch</p>
+        
+        {stats && (
+          <p style={s.epoch}>Current Epoch: <b style={{color:'#22c55e',fontSize:'1.2em'}}>#{stats.currentEpoch}</b></p>
+        )}
+        
+        <div style={s.searchBox}>
           <input
-            type="text"
-            placeholder="Enter prover wallet address (0x...)"
-            value={proverAddress}
-            onChange={(e) => setProverAddress(e.target.value)}
-            style={styles.input}
-            onKeyPress={(e) => e.key === 'Enter' && searchProver()}
+            style={s.input}
+            placeholder="Enter prover wallet (0x...)"
+            value={address}
+            onChange={e => setAddress(e.target.value)}
+            onKeyPress={e => e.key === 'Enter' && search()}
           />
-          <button 
-            onClick={searchProver} 
-            disabled={loading}
-            style={styles.button}
-          >
-            {loading ? 'Searching...' : 'Search'}
+          <button style={s.btn} onClick={search} disabled={loading}>
+            {loading ? '...' : 'Search'}
           </button>
         </div>
-
-        {error && (
-          <div style={styles.error}>{error}</div>
-        )}
-
-        {/* Prover Results */}
-        {searchedProver && searchedProver.found && (
-          <div style={styles.results}>
-            <div style={styles.proverHeader}>
-              <h2 style={styles.proverTitle}>Prover: {formatAddress(searchedProver.prover)}</h2>
-              <a 
-                href={`https://etherscan.io/address/${searchedProver.prover}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={styles.etherscanLink}
-              >
-                View on Etherscan ↗
-              </a>
+        
+        {error && <p style={s.error}>{error}</p>}
+        
+        {result?.found && (
+          <div style={s.card}>
+            <div style={s.header}>
+              <span style={s.addr}>{fmt(result.prover)}</span>
+              <a href={`https://etherscan.io/address/${result.prover}`} target="_blank" rel="noreferrer" style={s.link}>Etherscan ↗</a>
             </div>
-
-            {/* Summary Cards */}
-            <div style={styles.summaryGrid}>
-              <div style={styles.summaryCard}>
-                <div style={styles.summaryLabel}>Total Epochs</div>
-                <div style={styles.summaryValue}>{searchedProver.summary.totalEpochsParticipated}</div>
+            
+            <div style={s.grid}>
+              <div style={s.stat}>
+                <div style={s.label}>Total Rewards</div>
+                <div style={s.value}>{result.summary.totalRewards.toLocaleString()} AZTEC</div>
               </div>
-              <div style={styles.summaryCard}>
-                <div style={styles.summaryLabel}>Total Submissions</div>
-                <div style={styles.summaryValue}>{searchedProver.summary.totalSubmissions}</div>
+              <div style={s.stat}>
+                <div style={s.label}>Epochs</div>
+                <div style={s.value}>{result.summary.totalEpochs}</div>
               </div>
-              <div style={styles.summaryCard}>
-                <div style={styles.summaryLabel}>Total Gas Used</div>
-                <div style={styles.summaryValue}>{(searchedProver.summary.totalGasUsed / 1e6).toFixed(2)}M</div>
-              </div>
-              <div style={styles.summaryCard}>
-                <div style={styles.summaryLabel}>Total TX Fees (ETH)</div>
-                <div style={styles.summaryValue}>{searchedProver.summary.totalTxFeeEth.toFixed(4)}</div>
+              <div style={s.stat}>
+                <div style={s.label}>Submissions</div>
+                <div style={s.value}>{result.summary.totalSubmissions}</div>
               </div>
             </div>
-
-            {/* Epoch Table */}
-            <h3 style={styles.sectionTitle}>Epoch Participation</h3>
-            <div style={styles.tableContainer}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Epoch</th>
-                    <th style={styles.th}>Submissions</th>
-                    <th style={styles.th}>Gas Used</th>
-                    <th style={styles.th}>TX Fee (ETH)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {searchedProver.epochs.map((epoch) => (
-                    <tr key={epoch.epochNumber} style={styles.tr}>
-                      <td style={styles.td}>
-                        <span style={styles.epochBadge}>#{epoch.epochNumber}</span>
-                      </td>
-                      <td style={styles.td}>{epoch.submissions}</td>
-                      <td style={styles.td}>{epoch.gasUsed.toLocaleString()}</td>
-                      <td style={styles.td}>{epoch.txFeeEth.toFixed(6)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            
+            <h3 style={s.h3}>Rewards by Epoch</h3>
+            <div style={s.table}>
+              <div style={s.row}>
+                <span style={s.th}>Epoch</span>
+                <span style={s.th}>Reward (AZTEC)</span>
+                <span style={s.th}>Submissions</span>
+              </div>
+              {result.epochs.slice(0, 50).map(e => (
+                <div key={e.epoch} style={s.row}>
+                  <span style={s.td}>#{e.epoch}</span>
+                  <span style={{...s.td, color:'#22c55e', fontWeight:'bold'}}>{e.reward}</span>
+                  <span style={s.td}>{e.submissions}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}
-
-        {searchedProver && !searchedProver.found && (
-          <div style={styles.notFound}>
-            <p>❌ No submissions found for this address</p>
-            <p style={styles.notFoundHint}>Make sure you entered a valid prover address</p>
-          </div>
+        
+        {result && !result.found && (
+          <p style={s.notFound}>❌ No submissions found for this address</p>
         )}
-
-        {/* General Stats (when not searching) */}
-        {!searchedProver && stats && (
-          <div style={styles.statsSection}>
-            <h3 style={styles.sectionTitle}>Network Overview</h3>
-            <div style={styles.summaryGrid}>
-              <div style={styles.summaryCard}>
-                <div style={styles.summaryLabel}>Total Epochs</div>
-                <div style={styles.summaryValue}>{stats.stats.totalEpochs}</div>
+        
+        {!result && stats && (
+          <div style={s.card}>
+            <h3 style={s.h3}>Top Provers</h3>
+            <div style={s.table}>
+              <div style={s.row}>
+                <span style={s.th}>#</span>
+                <span style={s.th}>Address</span>
+                <span style={s.th}>Total Rewards</span>
+                <span style={s.th}>Epochs</span>
               </div>
-              <div style={styles.summaryCard}>
-                <div style={styles.summaryLabel}>Active Provers</div>
-                <div style={styles.summaryValue}>{stats.stats.totalProvers}</div>
-              </div>
-              <div style={styles.summaryCard}>
-                <div style={styles.summaryLabel}>Total Submissions</div>
-                <div style={styles.summaryValue}>{stats.stats.totalSubmissions.toLocaleString()}</div>
-              </div>
-            </div>
-
-            <h3 style={styles.sectionTitle}>Top Provers</h3>
-            <div style={styles.tableContainer}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>#</th>
-                    <th style={styles.th}>Address</th>
-                    <th style={styles.th}>Epochs</th>
-                    <th style={styles.th}>Submissions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stats.topProvers?.slice(0, 10).map((prover, i) => (
-                    <tr 
-                      key={prover.address} 
-                      style={styles.tr}
-                      onClick={() => {
-                        setProverAddress(prover.address);
-                        searchProver();
-                      }}
-                    >
-                      <td style={styles.td}>{i + 1}</td>
-                      <td style={{...styles.td, ...styles.clickable}}>
-                        {formatAddress(prover.address)}
-                      </td>
-                      <td style={styles.td}>{prover.epochCount}</td>
-                      <td style={styles.td}>{prover.totalSubmissions}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {stats.topProvers?.map((p, i) => (
+                <div key={p.address} style={{...s.row, cursor:'pointer'}} onClick={() => {setAddress(p.address); search();}}>
+                  <span style={s.td}>{i+1}</span>
+                  <span style={{...s.td, color:'#60a5fa'}}>{fmt(p.address)}</span>
+                  <span style={{...s.td, color:'#22c55e', fontWeight:'bold'}}>{p.totalRewards.toLocaleString()}</span>
+                  <span style={s.td}>{p.epochCount}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}
-
-        <footer style={styles.footer}>
-          <p>Contract: <a href="https://etherscan.io/address/0x603bb2c05d474794ea97805e8de69bccfb3bca12" target="_blank" rel="noopener noreferrer" style={styles.footerLink}>0x603b...CA12</a></p>
-          {stats?.lastUpdated && <p>Last updated: {formatTime(stats.lastUpdated)}</p>}
+        
+        <footer style={s.footer}>
+          Contract: <a href="https://etherscan.io/address/0x603bb2c05d474794ea97805e8de69bccfb3bca12" target="_blank" rel="noreferrer" style={s.link}>0x603b...CA12</a>
         </footer>
       </div>
     </>
   );
 }
 
-const styles = {
-  container: {
-    minHeight: '100vh',
-    backgroundColor: '#0a0a0f',
-    color: '#e0e0e0',
-    fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
-    padding: '20px',
-    maxWidth: '900px',
-    margin: '0 auto'
-  },
-  header: {
-    textAlign: 'center',
-    marginBottom: '30px',
-    paddingTop: '20px'
-  },
-  title: {
-    fontSize: '2rem',
-    fontWeight: 'bold',
-    color: '#a855f7',
-    margin: '0 0 10px 0'
-  },
-  subtitle: {
-    color: '#888',
-    fontSize: '1rem',
-    margin: '0'
-  },
-  currentEpoch: {
-    marginTop: '15px',
-    fontSize: '1.1rem',
-    color: '#888'
-  },
-  epochHighlight: {
-    color: '#22c55e',
-    fontWeight: 'bold',
-    fontSize: '1.3rem'
-  },
-  searchContainer: {
-    display: 'flex',
-    gap: '10px',
-    marginBottom: '30px',
-    flexWrap: 'wrap'
-  },
-  input: {
-    flex: 1,
-    minWidth: '250px',
-    padding: '15px 20px',
-    fontSize: '1rem',
-    borderRadius: '12px',
-    border: '2px solid #333',
-    backgroundColor: '#1a1a2e',
-    color: '#fff',
-    outline: 'none'
-  },
-  button: {
-    padding: '15px 30px',
-    fontSize: '1rem',
-    fontWeight: 'bold',
-    borderRadius: '12px',
-    border: 'none',
-    backgroundColor: '#a855f7',
-    color: '#fff',
-    cursor: 'pointer'
-  },
-  error: {
-    backgroundColor: '#7f1d1d',
-    color: '#fca5a5',
-    padding: '15px',
-    borderRadius: '8px',
-    marginBottom: '20px',
-    textAlign: 'center'
-  },
-  results: {
-    backgroundColor: '#1a1a2e',
-    borderRadius: '16px',
-    padding: '25px',
-    marginBottom: '30px'
-  },
-  proverHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '20px',
-    flexWrap: 'wrap',
-    gap: '10px'
-  },
-  proverTitle: {
-    fontSize: '1.3rem',
-    color: '#a855f7',
-    margin: 0
-  },
-  etherscanLink: {
-    color: '#60a5fa',
-    textDecoration: 'none',
-    fontSize: '0.9rem'
-  },
-  summaryGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-    gap: '15px',
-    marginBottom: '25px'
-  },
-  summaryCard: {
-    backgroundColor: '#252540',
-    borderRadius: '12px',
-    padding: '20px',
-    textAlign: 'center'
-  },
-  summaryLabel: {
-    color: '#888',
-    fontSize: '0.85rem',
-    marginBottom: '8px'
-  },
-  summaryValue: {
-    color: '#22c55e',
-    fontSize: '1.5rem',
-    fontWeight: 'bold'
-  },
-  sectionTitle: {
-    fontSize: '1.1rem',
-    color: '#ccc',
-    marginBottom: '15px',
-    marginTop: '20px'
-  },
-  tableContainer: {
-    overflowX: 'auto'
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse'
-  },
-  th: {
-    textAlign: 'left',
-    padding: '12px 15px',
-    borderBottom: '1px solid #333',
-    color: '#888',
-    fontSize: '0.85rem',
-    fontWeight: 'normal'
-  },
-  tr: {
-    borderBottom: '1px solid #222'
-  },
-  td: {
-    padding: '12px 15px',
-    fontSize: '0.95rem'
-  },
-  epochBadge: {
-    backgroundColor: '#3b3b5c',
-    color: '#a855f7',
-    padding: '4px 10px',
-    borderRadius: '6px',
-    fontWeight: 'bold',
-    fontSize: '0.9rem'
-  },
-  clickable: {
-    cursor: 'pointer',
-    color: '#60a5fa'
-  },
-  notFound: {
-    textAlign: 'center',
-    padding: '40px',
-    backgroundColor: '#1a1a2e',
-    borderRadius: '16px'
-  },
-  notFoundHint: {
-    color: '#666',
-    fontSize: '0.9rem'
-  },
-  statsSection: {
-    backgroundColor: '#1a1a2e',
-    borderRadius: '16px',
-    padding: '25px'
-  },
-  footer: {
-    textAlign: 'center',
-    color: '#555',
-    fontSize: '0.85rem',
-    marginTop: '40px',
-    paddingBottom: '20px'
-  },
-  footerLink: {
-    color: '#60a5fa',
-    textDecoration: 'none'
-  }
+const s = {
+  page: { minHeight:'100vh', background:'#0a0a12', color:'#e0e0e0', fontFamily:'system-ui', padding:'20px', maxWidth:'800px', margin:'0 auto' },
+  title: { textAlign:'center', color:'#a855f7', fontSize:'1.8rem', marginBottom:'5px' },
+  sub: { textAlign:'center', color:'#666', marginTop:0 },
+  epoch: { textAlign:'center', color:'#888' },
+  searchBox: { display:'flex', gap:'10px', marginBottom:'20px', flexWrap:'wrap' },
+  input: { flex:1, minWidth:'200px', padding:'14px', borderRadius:'10px', border:'2px solid #333', background:'#1a1a2e', color:'#fff', fontSize:'1rem' },
+  btn: { padding:'14px 28px', borderRadius:'10px', border:'none', background:'#a855f7', color:'#fff', fontWeight:'bold', cursor:'pointer', fontSize:'1rem' },
+  error: { background:'#7f1d1d', color:'#fca5a5', padding:'12px', borderRadius:'8px', textAlign:'center' },
+  card: { background:'#1a1a2e', borderRadius:'14px', padding:'20px', marginBottom:'20px' },
+  header: { display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'15px', flexWrap:'wrap', gap:'10px' },
+  addr: { fontSize:'1.2rem', color:'#a855f7', fontWeight:'bold' },
+  link: { color:'#60a5fa', textDecoration:'none', fontSize:'0.9rem' },
+  grid: { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(120px, 1fr))', gap:'12px', marginBottom:'20px' },
+  stat: { background:'#252545', borderRadius:'10px', padding:'15px', textAlign:'center' },
+  label: { color:'#888', fontSize:'0.85rem', marginBottom:'5px' },
+  value: { color:'#22c55e', fontSize:'1.4rem', fontWeight:'bold' },
+  h3: { color:'#ccc', fontSize:'1rem', marginBottom:'10px' },
+  table: { background:'#12121f', borderRadius:'10px', overflow:'hidden' },
+  row: { display:'grid', gridTemplateColumns:'1fr 2fr 1fr', padding:'10px 15px', borderBottom:'1px solid #222' },
+  th: { color:'#888', fontSize:'0.8rem' },
+  td: { fontSize:'0.95rem' },
+  notFound: { textAlign:'center', padding:'30px', background:'#1a1a2e', borderRadius:'14px' },
+  footer: { textAlign:'center', color:'#555', fontSize:'0.85rem', marginTop:'30px' }
 };
